@@ -1,0 +1,92 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# rea-termux: Termux-compatible REA surface (android/arm64).
+# Upstream `rea` JADX/Ghidra/Hopper/IDA engines are unsupported on android/arm64,
+# so this wrapper passes through every REA command that CAN run on Termux and
+# redirects engine-backed commands to Termux-native fallbacks (skylot jadx,
+# apktool, aapt2, sqlite3, wabt, binwalk, adb). RAM capped at 1GB heap.
+set -u
+
+export REA_JADX_MCP_JAR="/data/data/com.termux/files/usr/tmp/opencode/jadx-headless-mcp-0.7.1-all.jar"
+export REA_JADX_HEAP_MIB="1024"
+export JAVA_TOOL_OPTIONS="-Xmx1024m"
+export JADX_BIN="/data/data/com.termux/files/usr/tmp/opencode/jadx-cli/bin/jadx"
+export APKTOOL_JAR="/data/data/com.termux/files/usr/tmp/opencode/apktool.jar"
+export AAPT2="$HOME/android-sdk/build-tools/36.0.0/aapt2"
+export SLEIGHHOME="$HOME/.local/lib/rizin/plugins/rz_ghidra_sleigh"
+# Built on-device from rizinorg/rz-ghidra v0.9.0 (cmake -O1, -j2): core_ghidra.so
+# provides the `pdg` decompiler inside rizin. rizin 0.9.1 (Termux pkg).
+REA="$HOME/rea/scripts/rea.mjs"
+
+ram_note() { echo "[rea-termux] RAM cap: heap 1024m, threads <=2 (limit 1.5GB)" >&2; }
+
+# Commands that run locally on Termux via the real REA CLI (no native engine needed)
+# (explicit case list in is_passthru() below)
+
+is_passthru() {
+  case "$1" in
+    analyze|analyze-javascript-application|inspect|inspect-artifact|extract-artifact|inspect-go-binary|inspect-wasm-artifact|compare|compare-application-versions|compare-javascript-export-shapes|compare-managed-members|compare-process-captures|compare-source-to-bundle|compare-wasm-interfaces|compare-web-captures|compare-web-screenshots|inspect-analysis-view|inspect-apktool-client|inspect-adb-client|inspect-adb-device|inspect-adb-display|inspect-adb-package|inspect-adb-window|inspect-asset-catalog|inspect-binary-layout|inspect-dart-aot|inspect-evidence-bundle|inspect-evm-interface|inspect-firmware-regions|inspect-keyed-archive|inspect-macho|inspect-managed-artifact|inspect-managed-members|inspect-managed-native-boundaries|inspect-packet-fields|inspect-pcap-capture|identify-flutter-build|inspect-flutter-build|project-android-application-graph|project-apple-application-graph|project-harmony-application-graph|project-managed-application-graph|decode-android-resources|decode-interface-builder|extract-firmware|inspect-jeb-client|capture-adb-screen|collect-adb-bugreport|pull-adb-file|pull-adb-package|push-adb-file|read-adb-logcat|read-adb-setting|resolve-adb-packages|start-adb-activity|start-adb-app|stop-adb-app|uninstall-adb-package|capabilities|providers|doctor|evidence-export|evidence-import|inspect-evidence-bundle) return 0;;
+    *) return 1;;
+  esac
+}
+
+usage() {
+  cat >&2 <<'EOF'
+rea-termux — Termux-compatible REA (RAM-capped 1GB heap)
+Usage:
+  rea-termux <rea-command> [args...]   # passthru for engine-free commands
+  rea-termux manifest <apk>            # aapt2 badging
+  rea-termux manifest-xml <apk>        # aapt2 xmltree AndroidManifest
+  rea-termux decode <apk> <outdir>     # apktool (smali+res)
+  rea-termux decompile <apk> <outdir>  # skylot jadx, -j2
+  rea-termux classes <apk-outdir> <keyword>  # grep decompiled/smali sources
+  rea-termux decompile-native <lib.so> <symbol>  # Ghidra pdg on-device (core_ghidra)
+  rea-termux methods <file> <method>   # grep method in jadx output
+  rea-termux uuids <decoded-dir>       # grep BT UUIDs in smali
+  rea-termux urls <decoded-dir>        # grep https endpoints in smali
+  rea-termux doctor                    # termux readiness (not upstream doctor)
+  rea-termux help                      # this help + capability matrix
+Engine-backed (UNSUPPORTED on android/arm64): inspect-android-package,
+search-android-classes, inspect-android-class/method, trace-android-references,
+hopper/ghidra/ida/jeb-native, browser/electron scenarios, tshark captures.
+Use the fallbacks above instead.
+EOF
+  exit 1
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  help|--help|-h) usage;;
+  doctor)
+    echo "== rea-termux doctor (android/arm64) =="
+    for t in node java aapt2 apktool jadx sqlite3 wat2wasm binwalk adb strings objdump; do
+      case $t in
+        aapt2) p="$AAPT2";; apktool) p="$APKTOOL_JAR";; jadx) p="$JADX_BIN";;
+        sqlite3) p="$HOME/android-sdk/platform-tools/sqlite3";;
+        *) p="$(command -v $t 2>/dev/null || echo MISSING)";;
+      esac
+      echo "$t: $p"
+    done
+    echo "node: $(node --version 2>/dev/null)"; java -version 2>&1 | head -1
+    echo "heap cap: 1024m (limit 1.5GB). native engines: UNSUPPORTED (hopper/ghidra/ida)."
+    echo "missing: tshark, sigrok-cli, mitmdump, gdb (pkg installable except tshark-x11 heavy)."
+    ;;
+  manifest) ram_note; [ $# -eq 1 ] || usage; exec "$AAPT2" dump badging "$1";;
+  manifest-xml) ram_note; [ $# -eq 1 ] || usage; exec "$AAPT2" dump xmltree "$1" --file AndroidManifest.xml;;
+  package-info) ram_note; [ $# -eq 1 ] || usage; exec "$AAPT2" dump badging "$1" | grep -E "^(package|launchable-activity|application-label|uses-permission)";;
+  decode) ram_note; [ $# -eq 2 ] || usage; exec java -Xmx1024m -jar "$APKTOOL_JAR" d -f "$1" -o "$2";;
+  decompile) ram_note; [ $# -eq 2 ] || usage; export JADX_OPTS="-Xmx1024m"; exec "$JADX_BIN" -j 2 -d "$2" "$1";;
+  decompile-native) # Ghidra decompiler via rizin core_ghidra (built on-device): rea-termux decompile-native <lib.so> <symbol>
+    [ $# -eq 2 ] || usage; ram_note
+    exec rizin -q -c 'e scr.color=false; aaa; pdg @ '"$2"'' "$1";;
+  classes) [ $# -eq 2 ] || usage; dir="$1"; kw="$2"; ram_note; grep -rli --include="*.java" --include="*.smali" "$kw" "$dir" | head -50;;
+  methods) [ $# -eq 2 ] || usage; ram_note; grep -rn --include="*.java" "$2" "$1" | head -30;;
+  uuids) [ $# -eq 1 ] || usage; ram_note; grep -rhoE "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" "$1" 2>/dev/null | sort -fu | head -30;;
+  urls) [ $# -eq 1 ] || usage; ram_note; grep -rhoE "https?://[A-Za-z0-9._/-]+" "$1" 2>/dev/null | sort -fu | head -40;;
+  inspect-android-package|search-android-classes|inspect-android-class|inspect-android-method|trace-android-references)
+    echo "[rea-termux] '$cmd' needs the REA JADX engine (unsupported on android/arm64)." >&2
+    echo "Fallback: rea-termux decompile <apk> <out>  OR  rea-termux classes <out> <keyword>" >&2
+    exit 2;;
+  *)
+    if is_passthru "$cmd"; then ram_note; exec node "$REA" "$cmd" "$@";
+    else echo "[rea-termux] unknown: $cmd" >&2; usage; fi;;
+esac
