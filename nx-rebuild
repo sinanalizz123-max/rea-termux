@@ -1,0 +1,73 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Rebuild NothingX dump APK from edited tree: merge fixed dex + fixed engine +
+# fixed manifest into release.RE.apk base, align, sign. Pure stdlib python.
+set -euo pipefail
+NX=/data/data/com.termux/files/usr/tmp/opencode/nx
+REFL=/data/data/com.termux/files/usr/tmp/opencode/refl
+python3 << EOF
+import zipfile, struct, zlib, binascii
+fixed = open('$REFL/AndroidManifest.fixed','rb').read()
+pflutter = open('/data/data/com.termux/files/usr/tmp/opencode/pflutter-fixed.so','rb').read()
+import os
+eng = os.environ.get('NX_ENGINE', '')
+if eng == 'stock':
+    pflutter = open('/data/data/com.termux/files/usr/tmp/opencode/stock-flutter.so','rb').read()
+    print('ENGINE=stock')
+fdex = open(os.environ.get('NX_DEX7', '$NX/dex/classes7-fixed.dex'),'rb').read()
+fdex6 = open(os.environ.get('NX_DEX6', '$NX/dex/classes6-fixed.dex'),'rb').read()
+zin = zipfile.ZipFile(os.environ.get('NX_BASE', '/data/data/com.termux/files/home/release.RE.apk'))
+extra_libs = {}
+gf = os.environ.get('NX_GADGET', '')
+if gf:
+    extra_libs['lib/arm64-v8a/libfrida-gadget.so'] = open(gf,'rb').read()
+    print('+gadget lib')
+gfc = os.environ.get('NX_GADGET_CONFIG', '')
+if gfc:
+    extra_libs['lib/arm64-v8a/libfrida-gadget.config.so'] = open(gfc,'rb').read()
+    print('+gadget config')
+over = {'AndroidManifest.xml': fixed, 'lib/arm64-v8a/libflutter.so': pflutter, 'classes7.dex': fdex, 'classes6.dex': fdex6}
+over.update(extra_libs)
+raw = {}
+for n in zin.namelist():
+    if n.startswith('META-INF/'):
+        continue
+    raw[n] = over.get(n, zin.read(n))
+raw.update(extra_libs)
+order = ['AndroidManifest.xml'] + sorted(n for n in raw if n == 'resources.arsc') \
+    + sorted(n for n in raw if n.endswith('.so')) \
+    + sorted(n for n in raw if n not in ('AndroidManifest.xml', 'resources.arsc') and not n.endswith('.so'))
+stored_of = lambda n: (n == 'resources.arsc' or n.endswith('.so'))
+def raw_deflate(data):
+    c = zlib.compressobj(6, zlib.DEFLATED, -15)
+    return c.compress(data) + c.flush()
+pay = {n: (raw[n] if stored_of(n) else raw_deflate(raw[n])) for n in order}
+U16 = lambda v: struct.pack('<H', v)
+U32 = lambda v: struct.pack('<I', v)
+with open('$REFL/final3.apk','wb') as out:
+    recs = []
+    for n in order:
+        nb = n.encode()
+        align = 16384 if n.endswith('.so') else 4
+        pad = (-(out.tell() + 30 + len(nb) + 4)) % align
+        extra = (b'\x00\x00' + U16(pad) + b'\x00'*pad) if pad else b''
+        crc = binascii.crc32(raw[n]) & 0xffffffff
+        comp = 0 if stored_of(n) else 8
+        off = out.tell()
+        out.write(U32(0x04034b50) + U16(20) + U16(0) + U16(comp) + U16(0) + U16(0)
+                  + U32(crc) + U32(len(pay[n])) + U32(len(raw[n])) + U16(len(nb)) + U16(len(extra)))
+        out.write(nb + extra + pay[n])
+        recs.append((nb, crc, len(pay[n]), len(raw[n]), comp, off, extra))
+    cdpos = out.tell()
+    for nb, crc, cs, us, comp, off, extra in recs:
+        out.write(U32(0x02014b50) + U16(20) + U16(20) + U16(0) + U16(comp) + U16(0) + U16(0)
+                  + U32(crc) + U32(cs) + U32(us) + U16(len(nb)) + U16(len(extra)) + U16(0) + U16(0) + U16(0)
+                  + U32(0) + U32(off))
+        out.write(nb + extra)
+    cdlen = out.tell() - cdpos
+    out.write(U32(0x06054b50) + U16(0) + U16(0) + U16(len(recs)) + U16(len(recs)) + U32(cdlen) + U32(cdpos) + U16(0))
+print('rebuilt', len(recs))
+EOF
+unzip -t $REFL/final3.apk 2>&1 | tail -1
+set -a; source "/storage/emulated/0/opencode/keystore/release.env"; set +a
+apksigner sign --ks "/storage/emulated/0/opencode/keystore/release-key.jks" --ks-pass env:RELEASE_STORE_PASSWORD --ks-key-alias myapp --key-pass env:RELEASE_KEY_PASSWORD --out $REFL/nothingx-bridge.apk $REFL/final3.apk 2>&1 | head -3
+apksigner verify $REFL/nothingx-bridge.apk && echo VERIFIED && cp $REFL/nothingx-bridge.apk /storage/emulated/0/Download/nxdump.apk && rish -c 'cp /storage/emulated/0/Download/nxdump.apk /data/local/tmp/nxdump.apk && pm install-create'
