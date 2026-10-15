@@ -16,7 +16,7 @@ chmod +x ~/bin/rea-termux
 Needs on PATH: `node` (REA checkout at `~/rea`), `java` (JDK 17+), `aapt2`
 (Android SDK build-tools), plus `apktool.jar` / skylot `jadx` pointed at by the
 env vars at the top of the script. For `decompile-native` you need rizin +
-the on-device rz-ghidra build — see
+an on-device rz-ghidra build — see
 [termux-rz-ghidra](https://github.com/sinanalizz123-max/termux-rz-ghidra).
 
 ## Usage
@@ -40,10 +40,8 @@ Android engine commands (`inspect-android-package`, `search-android-classes`,
 `inspect-android-class/method`, `trace-android-references`) are blocked with a
 fallback hint — use `decompile` + `classes` instead.
 
-## Provenance
+## Notes
 
-Built while reverse-engineering Nothing X 3.10.0 fully on-device (Termux only,
-1.5–1.8 GB RAM cap): full-APK jadx OOMs at 1 GB heap, so big APKs go per-dex
-(`unzip` each `classesN.dex`, `rea-termux decompile` one at a time, `-j1`).
-
-Independent community project. Not affiliated with the REA authors.
+- Big APKs can OOM jadx at 1 GB heap: extract each `classesN.dex` and decompile
+  one at a time with `-j1`.
+- Independent community project. Not affiliated with the REA authors.
